@@ -190,19 +190,21 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
     async with parse_jobs_semaphore:
         supabase = await create_supabase()
         delay = parse_jobs_initial_delay
+        last_attempt_error = 'None'
 
         for attempt in range(1, max_retries + 1):
-            last_attempt_error = 'None'
+            print(f'Parsing attempt #{attempt}.')
             try:
                 response = await ai_client.chat.completions.create(
                     model=ollama_model,
                     messages=[
                         {
                             "role": "system",
-                            "content": f"This is attempt #{attempt}, last attempt error:  \n{last_attempt_error}  \n{base_prompt}"},
+                            "content": base_prompt
+                        },
                         {
                             "role": "user",
-                            "content": chunk[1]
+                            "content": f"website_address: {chunk[0]}  \nThis is attempt #{attempt}, last attempt error:  \n{last_attempt_error}  \nMARKDOWN:  \n{chunk[1]}"
                         }
                     ],
                     response_format={"type": "json_object"},
@@ -224,7 +226,8 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                 count += saved_count
 
                 await asyncio.sleep(parse_jobs_interval)
-                attempt = 0
+                attempt = 1
+                last_attempt_error = 'None'
             except APIError as e:
                 error = str(e)
                 if e.code == '23505':  # Duplicate key
