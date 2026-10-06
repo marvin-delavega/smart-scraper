@@ -229,6 +229,12 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                 break
             except APIError as e:
                 error = str(e)
+
+                if attempt >= max_retries:
+                    print(
+                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                    break
+
                 if e.code == '23505':  # Duplicate key
                     print(f'{e.__class__}: {error}. Retrying...')
                 else:
@@ -242,8 +248,9 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                 error = str(e)
 
                 if attempt >= max_retries:
-                    raise HTTPException(
-                        status_code=503, detail=f'Validation failed, max retries reached. {e.__class__}: ' + error)
+                    print(
+                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                    break
 
                 print(f'{e.__class__}: {error}. Retrying...')
 
@@ -254,8 +261,9 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                 error = str(e)
 
                 if attempt >= max_retries:
-                    raise HTTPException(
-                        status_code=503, detail=f'Model unavailable, max retries reached. {e.__class__}: ' + error)
+                    print(
+                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                    break
 
                 if '400' in error or '404' in error or '500' in error:
                     print(f'{e.__class__}: {error}. Retrying...')
