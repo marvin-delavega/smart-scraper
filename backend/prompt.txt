@@ -9,10 +9,7 @@ CRITICAL INSTRUCTIONS:
    - **company**: The name of the posting company, their website, or the person posting the job.
    - **salary_range**: The salary range or single salary value if mentioned (leave empty string if not found).
    - **location**: The work location (e.g., city, country, or "Remote").
-   - **primary_link**: The primary link to the job posting.
+   - **primary_link**: The primary link related to the specific job post chosen from the relevant links, not the website_address. Try to pick an address that goes to the specific job.
    - **links**: An array of all related URLs found in or associated with this job posting.
 3. All field values must be string except for links.
 4. All fields must not have nested json objects, if any field contains multiple values, separate them with commas.
-
-MARKDOWN:
-

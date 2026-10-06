@@ -1,17 +1,16 @@
 import asyncio
-import itertools
 import os
 
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from postgrest.exceptions import APIError
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from supabase import create_async_client, AsyncClient
 from dotenv import load_dotenv
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, DefaultMarkdownGenerator, PruningContentFilter
-from openai import AsyncOpenAI
+from openai import APITimeoutError, AsyncOpenAI
 
 app = FastAPI()
 
@@ -24,16 +23,18 @@ job_table = os.getenv('SUPABASE_JOB_TABLE') or ''
 
 ollama_model = os.getenv('OLLAMA_MODEL') or ''
 
-parse_jobs_initial_delay = os.getenv('PARSE_JOBS_INITIAL_DELAY') or ''
-parse_jobs_interval = os.getenv('PARSE_JOBS_INTERVAL') or ''
-parse_jobs_exponential_backoff_factor = os.getenv(
-    'PARSE_JOBS_EXPONENTIAL_BACKOFF_FACTOR') or ''
-parse_jobs_max_retries = os.getenv('PARSE_JOBS_MAX_RETRIES') or ''
+parse_jobs_initial_delay = int(os.getenv('PARSE_JOBS_INITIAL_DELAY') or '0')
+parse_jobs_interval = int(os.getenv('PARSE_JOBS_INTERVAL') or '0')
+parse_jobs_exponential_backoff_factor = int(os.getenv(
+    'PARSE_JOBS_EXPONENTIAL_BACKOFF_FACTOR') or '2')
+parse_jobs_max_retries = int(os.getenv('PARSE_JOBS_MAX_RETRIES') or '5')
 
-web_scrape_concurrent_workers = os.getenv(
-    'WEB_SCRAPE_CONCURRENT_WORKERS') or ''
-parse_jobs_concurrent_workers = os.getenv(
-    'PARSE_JOBS_CONCURRENT_WORKERS') or ''
+openai_timeout = int(os.getenv('OPENAI_TIMEOUT') or '120')
+
+chunk_size = int(os.getenv('CHUNK_SIZE') or '3000')
+
+parse_jobs_concurrent_workers = int(os.getenv(
+    'PARSE_JOBS_CONCURRENT_WORKERS') or '1')
 
 
 print(f'Loaded Supabase URL: {url}')
@@ -46,7 +47,8 @@ print(f'Loaded Parse Jobs Interval: {parse_jobs_interval}')
 print(
     f'Loaded Parse Jobs Exponential Factor: {parse_jobs_exponential_backoff_factor}')
 print(f'Loaded Parse Jobs Max Retries: {parse_jobs_max_retries}')
-print(f'Loaded Web Scrape Concurrent Workers: {web_scrape_concurrent_workers}')
+print(f'Loaded OpenAI Timeout: {openai_timeout}')
+print(f'Loaded Chunk Size: {chunk_size}')
 print(f'Loaded Parse Jobs Concurrent Workers: {parse_jobs_concurrent_workers}')
 
 
@@ -61,7 +63,6 @@ print(f'Loaded Base Prompt: {base_prompt}')
 ai_client = AsyncOpenAI(
     api_key='ollama', base_url="http://host.docker.internal:11434/v1")
 max_retries = int(parse_jobs_max_retries)
-scrape_semaphore = asyncio.Semaphore(int(web_scrape_concurrent_workers))
 parse_jobs_semaphore = asyncio.Semaphore(int(parse_jobs_concurrent_workers))
 
 prune_filter = PruningContentFilter(
@@ -120,115 +121,206 @@ async def add_website(website: Website) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post('/scrape')
-async def scrape_websites() -> dict[str, Any]:
+@app.post('/scraper/run')
+async def trigger_scraper(tasks: BackgroundTasks) -> dict[str, Any]:
+    tasks.add_task(run_scraper)
+    return {'message': 'Scraper started', 'data': ''}
+
+
+async def run_scraper():
+    print(f'Starting scraper...')
+
     websites = [Website(**website) for website in (await get_websites())['data']]
+    print(f'Found {len(websites)} websites to scrape')
 
-    if not websites:
-        return {"message": "No websites found", "data": []}
+    total_jobs_processed = 0
+    for w in websites:
+        total_jobs_processed += await scrape(w)
 
-    scrape_results = await asyncio.gather(*(scrape_website(w) for w in websites))
-    chunks = list(itertools.chain.from_iterable([await split_markdown(m, 3000) for m in scrape_results]))
-    await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
-
-    return {"message": "Scraping completed", "data": 0}
+    print(
+        f'Scraped {total_jobs_processed} jobs from {len(websites)} websites. See dashboard')
 
 
-async def scrape_website(website: Website) -> str:
-    async with scrape_semaphore:
-        async with AsyncWebCrawler() as crawler:
-            result = await crawler.arun(url=website.address, config=crawler_config)
-            return result.markdown.raw_markdown
+async def scrape(website: Website) -> int:
+    print(f'Scraping {website.name}: {website.address}...')
+
+    crawl_result = await crawl(website)
+    print(f'Crawl result: {len(crawl_result)} characters. Chunking...')
+
+    chunks = get_chunks(crawl_result, chunk_size)
+    print(
+        f'Chunk result: {len(chunks)} chunks. Calling {ollama_model} to parse...')
+
+    parse_results = await asyncio.gather(*(parse_and_save_jobs(website, c) for c in chunks))
+    jobs_processed = sum(parse_results)
+
+    print(f'Parsed and saved {jobs_processed} jobs from {website.name}')
+    return jobs_processed
+
+
+async def crawl(website: Website) -> str:
+    async with AsyncWebCrawler() as crawler:
+        result = await crawler.arun(url=website.address, config=crawler_config)
+        return result.markdown.raw_markdown
 
 
 class JobPost(BaseModel):
     title: str = Field(description='The exact job title')
-    desc: Optional[str] = Field(
-        description='The summary of the job description')
-    company: Optional[str] = Field(
-        description='The name, website, or person of the job poster')
-    salary_range: Optional[str] = Field(
-        description='The salary range, this could be range or just a single value')
-    location: Optional[str] = Field(
-        description='The location of the work, could be a place or remote')
-    links: Optional[list[str]] = Field(
-        description='The links related to the job posting')
+    desc: Optional[str] = Field(default=None,
+                                description='The summary of the job description')
+    company: Optional[str] = Field(default=None,
+                                   description='The name, website, or person of the job poster')
+    salary_range: Optional[str] = Field(default=None,
+                                        description='The salary range, this could be range or just a single value')
+    location: Optional[str] = Field(default=None,
+                                    description='The location of the work, could be a place or remote')
+    links: Optional[list[str]] = Field(default=[],
+                                       description='The links related to the job posting')
+    website_address: Optional[str] = Field(default=None,
+                                           description='The website address of the job posting.')
     primary_link: str = Field(
         description='The primary link of the job posting')
+
+    def set_website_address(self, website: Website):
+        self.website_address = website.address
 
 
 class JobList(BaseModel):
     jobs: list[JobPost]
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input(cls, data: Any) -> Any:
+        if isinstance(data, list):
+            return {"jobs": data}
 
-async def split_markdown(markdown: str, max_size: int) -> list[str]:
+        if isinstance(data, dict):
+            for value in data.values():
+                if isinstance(value, list):
+                    return {"jobs": value}
+
+        return data
+
+    def assign_website(self, website: Website):
+        [job.set_website_address(website) for job in self.jobs]
+
+
+def get_chunks(markdown: str, max_size: int) -> list[str]:
     return [markdown[i: i + max_size] for i in range(0, len(markdown), max_size)]
 
 
 async def save_jobs(list: JobList, supabase: AsyncClient) -> int:
     job_json_list = [job.model_dump() for job in list.jobs]
-    result = await supabase.table(job_table).insert(job_json_list).execute()
+    result = await supabase.table(job_table).upsert(job_json_list).execute()
 
-    return result.count or 0
+    return len(result.data) or 0
 
 
-async def parse_and_save_jobs(markdown: str) -> int:
+async def parse_and_save_jobs(website: Website, chunk: str) -> int:
     count = 0
     async with parse_jobs_semaphore:
         supabase = await create_supabase()
-        delay = int(parse_jobs_initial_delay)
+        delay = parse_jobs_initial_delay
+        next_attempt_reinforcement = 'None'
 
         for attempt in range(1, max_retries + 1):
+            print(
+                f'Attempt #{attempt}. Calling {ollama_model} to parse {len(chunk)} characters... ')
             try:
+                start_time = datetime.now()
                 response = await ai_client.chat.completions.create(
                     model=ollama_model,
                     messages=[
                         {
                             "role": "system",
-                            "content": f"{base_prompt}"},
+                            "content": base_prompt
+                        },
                         {
                             "role": "user",
-                            "content": markdown
+                            "content": f"website_address: {chunk}  \nThis is attempt #{attempt}, last attempt error:  \n{next_attempt_reinforcement}  \nMARKDOWN:  \n{chunk[1]}"
                         }
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.1
+                    temperature=0.1,
+                    timeout=openai_timeout
                 )
+                elapsed_time_parsing = datetime.now() - start_time
 
                 if not response.choices or response.choices[0].message.content is None:
                     return count
 
                 raw_content = response.choices[0].message.content
+                print(
+                    f'{ollama_model} completed parsing in {elapsed_time_parsing.seconds} seconds, at attempt #{attempt}. Serializing...')
 
-                jobs = JobList.model_validate_json(raw_content)
-                saved_count = await save_jobs(jobs, supabase)
+                joblist = JobList.model_validate_json(raw_content)
 
-                print(f'Parsed and saved {saved_count} jobs')
+                if not joblist.jobs:
+                    print(
+                        f'Could not serialize {ollama_model} reponse. Skipping...')
+
+                joblist.assign_website(website)
+
+                print(
+                    f'Serialized {len(joblist.jobs)} jobs. Saving to {job_table} table...')
+
+                saved_count = await save_jobs(joblist, supabase)
+
+                print(f'Success! Parsed and saved {saved_count} jobs.')
 
                 count += saved_count
 
-                await asyncio.sleep(int(parse_jobs_interval))
-                attempt = 0
+                await asyncio.sleep(parse_jobs_interval)
+                break
+            except APITimeoutError as e:  # openai timeout error
+                print_error(e, e.message)
+
+                if not has_retries(attempt):
+                    break
+
+                next_attempt_reinforcement = f'Timeout. Try to keep the session within {openai_timeout} seconds.'
+                delay = await exponential_backoff(delay)
+            except APIError as e:  # supabase api error
+                print_error(e, e.message or '')
+
+                if not has_retries(attempt):
+                    break
+
+                next_attempt_reinforcement = 'None'
+                delay = await exponential_backoff(delay)
+            except ValidationError as e:
+                print_error(e, e.json())
+
+                if not has_retries(attempt):
+                    break
+
+                next_attempt_reinforcement = 'Pydantic validation error. Optimistic Retry. Try to fill up all fields.'
+                delay = await exponential_backoff(delay)
             except Exception as e:
-                error = str(e)
+                print_error(e, str(e))
 
-                if attempt >= max_retries:
-                    raise HTTPException(
-                        status_code=503, detail=f'Model unavailable, max retries reached. {e.__class__}: ' + error)
+                if not has_retries(attempt):
+                    break
 
-                if Exception is APIError:
-                    raise HTTPException(
-                        status_code=503, detail=f'Supabase error. : {e.__class__}: ' + error)
-
-                if Exception is ValidationError:
-                    print(f'{e.__class__}: {error}. Retrying...')
-                elif '400' in error or '404' in error or '500' in error:
-                    print(f'{e.__class__}: {error}. Retrying...')
-                else:
-                    raise HTTPException(
-                        status_code=500, detail=f'{e.__class__}: {error}')
-
-                await asyncio.sleep(delay)
-                delay *= int(parse_jobs_exponential_backoff_factor)
+                next_attempt_reinforcement = 'None'
+                delay = await exponential_backoff(delay)
 
     return count
+
+
+def has_retries(attempt: int) -> bool:
+    has_retries = attempt < max_retries
+
+    if not has_retries:
+        print(f'Max retries reached. Skipping...')
+
+    return has_retries
+
+
+def print_error(e: Exception, msg: str):
+    print(f'{e.__class__}: {msg}. Retrying...')
+
+
+async def exponential_backoff(current_delay: int) -> int:
+    await asyncio.sleep(current_delay)
+    return current_delay * parse_jobs_exponential_backoff_factor
