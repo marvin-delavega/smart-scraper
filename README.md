@@ -5,6 +5,17 @@ postings using AI, and store the structured data into Supabase. It leverages
 **crawl4ai** for efficient web scraping and **Ollama** (via OpenAI-compatible
 API) for intelligent data extraction.
 
+## ⭐ Goal
+
+My goal was to integrate AI into an interesting project. I was job hunting at
+the time (october 5, 2026), so I had the idea of web scraping job posts. The
+problem is that these websites could change by the time I've done configuring
+bespoke scraping logic. This is the part I could leverage AI, I thought of
+injecting an instruction and the raw scraped data and have it create
+json-formatted results for me. This way, I would not rely on specific scraping
+logic per website and this would allow me to add as many websites to scrape as
+possible.
+
 ## 🚀 Features
 
 - **Automated Web Scraping**: Uses `crawl4ai` with headless Chromium to fetch
