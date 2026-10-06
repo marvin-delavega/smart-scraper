@@ -134,7 +134,7 @@ async def scrape_websites() -> dict[str, Any]:
     print(f'Scrape results chunked into {len(chunks)} chunks. Parsing...')
 
     total_jobs = await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
-    print(f'Scraped {total_jobs} jobs in total. See dashboard')
+    print(f'Saved {sum(total_jobs)} jobs in total. See dashboard')
 
     return {"message": "Scraping completed", "data": 0}
 
@@ -226,8 +226,7 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                 count += saved_count
 
                 await asyncio.sleep(parse_jobs_interval)
-                attempt = 1
-                last_attempt_error = 'None'
+                break
             except APIError as e:
                 error = str(e)
                 if e.code == '23505':  # Duplicate key
@@ -248,7 +247,7 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
 
                 print(f'{e.__class__}: {error}. Retrying...')
 
-                last_attempt_error = 'Pydantic validation error. Optimistic Retry. Try to fill up all all fields.'
+                last_attempt_error = 'Pydantic validation error. Optimistic Retry. Try to fill up all fields.'
                 await asyncio.sleep(delay)
                 delay *= parse_jobs_exponential_backoff_factor
             except Exception as e:
