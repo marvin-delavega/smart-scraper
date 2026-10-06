@@ -7,11 +7,11 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from postgrest.exceptions import APIError
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from supabase import create_async_client, AsyncClient
 from dotenv import load_dotenv
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, DefaultMarkdownGenerator, PruningContentFilter
-from openai import AsyncOpenAI
+from openai import APITimeoutError, AsyncOpenAI
 
 app = FastAPI()
 
@@ -30,6 +30,9 @@ parse_jobs_exponential_backoff_factor = int(os.getenv(
     'PARSE_JOBS_EXPONENTIAL_BACKOFF_FACTOR') or '2')
 parse_jobs_max_retries = int(os.getenv('PARSE_JOBS_MAX_RETRIES') or '5')
 
+openai_min_timeout = int(os.getenv('OPENAI_MIN_TIMEOUT') or '30')
+openai_max_timeout = int(os.getenv('OPENAI_MAX_TIMEOUT') or '60')
+
 web_scrape_concurrent_workers = int(os.getenv(
     'WEB_SCRAPE_CONCURRENT_WORKERS') or '1')
 parse_jobs_concurrent_workers = int(os.getenv(
@@ -46,6 +49,8 @@ print(f'Loaded Parse Jobs Interval: {parse_jobs_interval}')
 print(
     f'Loaded Parse Jobs Exponential Factor: {parse_jobs_exponential_backoff_factor}')
 print(f'Loaded Parse Jobs Max Retries: {parse_jobs_max_retries}')
+print(f'Loaded OpenAI Minimum Timeout: {openai_min_timeout}')
+print(f'Loaded OpenAI Maxiumum Timeout: {openai_max_timeout}')
 print(f'Loaded Web Scrape Concurrent Workers: {web_scrape_concurrent_workers}')
 print(f'Loaded Parse Jobs Concurrent Workers: {parse_jobs_concurrent_workers}')
 
@@ -170,6 +175,19 @@ class JobPost(BaseModel):
 class JobList(BaseModel):
     jobs: list[JobPost]
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input(cls, data: Any) -> Any:
+        if isinstance(data, list):
+            return {"jobs": data}
+
+        if isinstance(data, dict):
+            for value in data.values():
+                if isinstance(value, list):
+                    return {"jobs": value}
+
+        return data
+
     def assign_website(self, website: Website):
         [job.set_website_address(website) for job in self.jobs]
 
@@ -191,6 +209,7 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
         supabase = await create_supabase()
         delay = parse_jobs_initial_delay
         last_attempt_error = 'None'
+        timeout = openai_min_timeout
 
         for attempt in range(1, max_retries + 1):
             print(f'Parsing attempt #{attempt}.')
@@ -208,7 +227,8 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                         }
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.1
+                    temperature=0.1,
+                    timeout=timeout
                 )
 
                 if not response.choices or response.choices[0].message.content is None:
@@ -224,9 +244,24 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                 print(f'Parsed and saved {saved_count} jobs')
 
                 count += saved_count
+                timeout = openai_min_timeout
 
                 await asyncio.sleep(parse_jobs_interval)
                 break
+            except APITimeoutError as e:
+                error = str(e)
+
+                if attempt >= max_retries:
+                    print(
+                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                    break
+
+                print(f'{e.__class__}: {error}. Retrying...')
+
+                last_attempt_error = 'Timeout'
+                timeout = openai_max_timeout
+                await asyncio.sleep(delay)
+                delay *= parse_jobs_exponential_backoff_factor
             except APIError as e:
                 error = str(e)
 
