@@ -160,7 +160,8 @@ class JobPost(BaseModel):
         description='The links related to the job posting')
     primary_link: str = Field(
         description='The primary link of the job posting')
-    website_address: Optional[str]
+    website_address: Optional[str] = Field(
+        description='The website address of the job posting.')
 
     def set_website_address(self, website: Website):
         self.website_address = website.address
