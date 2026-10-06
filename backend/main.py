@@ -128,10 +128,10 @@ async def scrape_websites() -> dict[str, Any]:
         return {"message": "No websites found", "data": []}
 
     scrape_results = await asyncio.gather(*(scrape_website(w) for w in websites))
-    print(f'Scraped {scrape_results.count} websites. Chunking...')
+    print(f'Scraped {len(scrape_results)} websites. Chunking...')
 
     chunks = list(itertools.chain.from_iterable([await split_markdown(m, 3000) for m in scrape_results]))
-    print(f'Scrape results chunked into {chunks.count} chunks. Parsing...')
+    print(f'Scrape results chunked into {len(chunks)} chunks. Parsing...')
 
     total_jobs = await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
     print(f'Scraped {total_jobs} jobs in total. See dashboard')
@@ -160,7 +160,7 @@ class JobPost(BaseModel):
         description='The links related to the job posting')
     primary_link: str = Field(
         description='The primary link of the job posting')
-    website_address: str
+    website_address: Optional[str]
 
     def set_website_address(self, website: Website):
         self.website_address = website.address
