@@ -128,7 +128,10 @@ async def scrape_websites() -> dict[str, Any]:
         return {"message": "No websites found", "data": []}
 
     scrape_results = await asyncio.gather(*(scrape_website(w) for w in websites))
+    print(f'Scraped {scrape_results.count} websites. Chunking...')
+
     chunks = list(itertools.chain.from_iterable([await split_markdown(m, 3000) for m in scrape_results]))
+    print(f'Scrape results chunked into {chunks.count} chunks. Parsing...')
     await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
 
     return {"message": "Scraping completed", "data": 0}
@@ -169,7 +172,7 @@ async def save_jobs(list: JobList, supabase: AsyncClient) -> int:
     job_json_list = [job.model_dump() for job in list.jobs]
     result = await supabase.table(job_table).insert(job_json_list).execute()
 
-    return result.count or 0
+    return len(result.data) or 0
 
 
 async def parse_and_save_jobs(markdown: str) -> int:
