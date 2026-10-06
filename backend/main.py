@@ -1,11 +1,10 @@
 import asyncio
-import itertools
 import os
 
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from supabase import create_async_client, AsyncClient
@@ -30,11 +29,10 @@ parse_jobs_exponential_backoff_factor = int(os.getenv(
     'PARSE_JOBS_EXPONENTIAL_BACKOFF_FACTOR') or '2')
 parse_jobs_max_retries = int(os.getenv('PARSE_JOBS_MAX_RETRIES') or '5')
 
-openai_min_timeout = int(os.getenv('OPENAI_MIN_TIMEOUT') or '30')
-openai_max_timeout = int(os.getenv('OPENAI_MAX_TIMEOUT') or '60')
+openai_timeout = int(os.getenv('OPENAI_TIMEOUT') or '120')
 
-web_scrape_concurrent_workers = int(os.getenv(
-    'WEB_SCRAPE_CONCURRENT_WORKERS') or '1')
+chunk_size = int(os.getenv('CHUNK_SIZE') or '3000')
+
 parse_jobs_concurrent_workers = int(os.getenv(
     'PARSE_JOBS_CONCURRENT_WORKERS') or '1')
 
@@ -49,9 +47,8 @@ print(f'Loaded Parse Jobs Interval: {parse_jobs_interval}')
 print(
     f'Loaded Parse Jobs Exponential Factor: {parse_jobs_exponential_backoff_factor}')
 print(f'Loaded Parse Jobs Max Retries: {parse_jobs_max_retries}')
-print(f'Loaded OpenAI Minimum Timeout: {openai_min_timeout}')
-print(f'Loaded OpenAI Maxiumum Timeout: {openai_max_timeout}')
-print(f'Loaded Web Scrape Concurrent Workers: {web_scrape_concurrent_workers}')
+print(f'Loaded OpenAI Timeout: {openai_timeout}')
+print(f'Loaded Chunk Size: {chunk_size}')
 print(f'Loaded Parse Jobs Concurrent Workers: {parse_jobs_concurrent_workers}')
 
 
@@ -66,7 +63,6 @@ print(f'Loaded Base Prompt: {base_prompt}')
 ai_client = AsyncOpenAI(
     api_key='ollama', base_url="http://host.docker.internal:11434/v1")
 max_retries = int(parse_jobs_max_retries)
-scrape_semaphore = asyncio.Semaphore(int(web_scrape_concurrent_workers))
 parse_jobs_semaphore = asyncio.Semaphore(int(parse_jobs_concurrent_workers))
 
 prune_filter = PruningContentFilter(
@@ -125,31 +121,47 @@ async def add_website(website: Website) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post('/scrape')
-async def scrape_websites() -> dict[str, Any]:
+@app.post('/scraper/run')
+async def trigger_scraper(tasks: BackgroundTasks) -> dict[str, Any]:
+    tasks.add_task(run_scraper)
+    return {'message': 'Scraper started', 'data': ''}
+
+
+async def run_scraper():
+    print(f'Starting scraper...')
+
     websites = [Website(**website) for website in (await get_websites())['data']]
+    print(f'Found {len(websites)} websites to scrape')
 
-    if not websites:
-        return {"message": "No websites found", "data": []}
+    total_jobs_processed = 0
+    for w in websites:
+        total_jobs_processed += await scrape(w)
 
-    scrape_results = await asyncio.gather(*(scrape_website(w) for w in websites))
-    print(f'Scraped {len(scrape_results)} websites. Chunking...')
-
-    chunks = list(itertools.chain.from_iterable([await split_markdown(m, 3000) for m in scrape_results]))
-    print(f'Scrape results chunked into {len(chunks)} chunks. Parsing...')
-
-    parse_results = await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
-    total_jobs = sum(parse_results)
-    print(f'Saved {total_jobs} jobs in total. See dashboard')
-
-    return {"message": "Scraping completed", "data": total_jobs}
+    print(
+        f'Scraped {total_jobs_processed} jobs from {len(websites)} websites. See dashboard')
 
 
-async def scrape_website(website: Website) -> tuple[Website, str]:
-    async with scrape_semaphore:
-        async with AsyncWebCrawler() as crawler:
-            result = await crawler.arun(url=website.address, config=crawler_config)
-            return (website, result.markdown.raw_markdown)
+async def scrape(website: Website) -> int:
+    print(f'Scraping {website.name}: {website.address}...')
+
+    crawl_result = await crawl(website)
+    print(f'Crawl result: {len(crawl_result)} characters. Chunking...')
+
+    chunks = get_chunks(crawl_result, chunk_size)
+    print(
+        f'Chunk result: {len(chunks)} chunks. Calling {ollama_model} to parse...')
+
+    parse_results = await asyncio.gather(*(parse_and_save_jobs(website, c) for c in chunks))
+    jobs_processed = sum(parse_results)
+
+    print(f'Parsed and saved {jobs_processed} jobs from {website.name}')
+    return jobs_processed
+
+
+async def crawl(website: Website) -> str:
+    async with AsyncWebCrawler() as crawler:
+        result = await crawler.arun(url=website.address, config=crawler_config)
+        return result.markdown.raw_markdown
 
 
 class JobPost(BaseModel):
@@ -193,8 +205,8 @@ class JobList(BaseModel):
         [job.set_website_address(website) for job in self.jobs]
 
 
-async def split_markdown(markdown: tuple[Website, str], max_size: int) -> list[tuple[Website, str]]:
-    return [(markdown[0], markdown[1][i: i + max_size]) for i in range(0, len(markdown[1]), max_size)]
+def get_chunks(markdown: str, max_size: int) -> list[str]:
+    return [markdown[i: i + max_size] for i in range(0, len(markdown), max_size)]
 
 
 async def save_jobs(list: JobList, supabase: AsyncClient) -> int:
@@ -204,17 +216,18 @@ async def save_jobs(list: JobList, supabase: AsyncClient) -> int:
     return len(result.data) or 0
 
 
-async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
+async def parse_and_save_jobs(website: Website, chunk: str) -> int:
     count = 0
     async with parse_jobs_semaphore:
         supabase = await create_supabase()
         delay = parse_jobs_initial_delay
         next_attempt_reinforcement = 'None'
-        timeout = openai_min_timeout
 
         for attempt in range(1, max_retries + 1):
-            print(f'Parsing attempt #{attempt}.')
+            print(
+                f'Attempt #{attempt}. Calling {ollama_model} to parse {len(chunk)} characters... ')
             try:
+                start_time = datetime.now()
                 response = await ai_client.chat.completions.create(
                     model=ollama_model,
                     messages=[
@@ -224,28 +237,38 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                         },
                         {
                             "role": "user",
-                            "content": f"website_address: {chunk[0]}  \nThis is attempt #{attempt}, last attempt error:  \n{next_attempt_reinforcement}  \nMARKDOWN:  \n{chunk[1]}"
+                            "content": f"website_address: {chunk}  \nThis is attempt #{attempt}, last attempt error:  \n{next_attempt_reinforcement}  \nMARKDOWN:  \n{chunk[1]}"
                         }
                     ],
                     response_format={"type": "json_object"},
                     temperature=0.1,
-                    timeout=timeout
+                    timeout=openai_timeout
                 )
+                elapsed_time_parsing = datetime.now() - start_time
 
                 if not response.choices or response.choices[0].message.content is None:
                     return count
 
                 raw_content = response.choices[0].message.content
+                print(
+                    f'{ollama_model} completed parsing in {elapsed_time_parsing.seconds} seconds, at attempt #{attempt}. Serializing...')
 
-                jobs = JobList.model_validate_json(raw_content)
-                jobs.assign_website(chunk[0])
+                joblist = JobList.model_validate_json(raw_content)
 
-                saved_count = await save_jobs(jobs, supabase)
+                if not joblist.jobs:
+                    print(
+                        f'Could not serialize {ollama_model} reponse. Skipping...')
 
-                print(f'Parsed and saved {saved_count} jobs')
+                joblist.assign_website(website)
+
+                print(
+                    f'Serialized {len(joblist.jobs)} jobs. Saving to {job_table} table...')
+
+                saved_count = await save_jobs(joblist, supabase)
+
+                print(f'Success! Parsed and saved {saved_count} jobs.')
 
                 count += saved_count
-                timeout = openai_min_timeout
 
                 await asyncio.sleep(parse_jobs_interval)
                 break
@@ -255,8 +278,7 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                 if not has_retries(attempt):
                     break
 
-                next_attempt_reinforcement = f'Timeout. Try to keep the session within {openai_min_timeout} to {openai_max_timeout} seconds.'
-                timeout = openai_max_timeout
+                next_attempt_reinforcement = f'Timeout. Try to keep the session within {openai_timeout} seconds.'
                 delay = await exponential_backoff(delay)
             except APIError as e:  # supabase api error
                 print_error(e, e.message or '')
