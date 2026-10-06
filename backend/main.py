@@ -132,16 +132,18 @@ async def scrape_websites() -> dict[str, Any]:
 
     chunks = list(itertools.chain.from_iterable([await split_markdown(m, 3000) for m in scrape_results]))
     print(f'Scrape results chunked into {chunks.count} chunks. Parsing...')
-    await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
+
+    total_jobs = await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
+    print(f'Scraped {total_jobs} jobs in total. See dashboard')
 
     return {"message": "Scraping completed", "data": 0}
 
 
-async def scrape_website(website: Website) -> str:
+async def scrape_website(website: Website) -> tuple[Website, str]:
     async with scrape_semaphore:
         async with AsyncWebCrawler() as crawler:
             result = await crawler.arun(url=website.address, config=crawler_config)
-            return result.markdown.raw_markdown
+            return (website, result.markdown.raw_markdown)
 
 
 class JobPost(BaseModel):
@@ -158,14 +160,21 @@ class JobPost(BaseModel):
         description='The links related to the job posting')
     primary_link: str = Field(
         description='The primary link of the job posting')
+    website_address: str
+
+    def set_website_address(self, website: Website):
+        self.website_address = website.address
 
 
 class JobList(BaseModel):
     jobs: list[JobPost]
 
+    def assign_website(self, website: Website):
+        [job.set_website_address(website) for job in self.jobs]
 
-async def split_markdown(markdown: str, max_size: int) -> list[str]:
-    return [markdown[i: i + max_size] for i in range(0, len(markdown), max_size)]
+
+async def split_markdown(markdown: tuple[Website, str], max_size: int) -> list[tuple[Website, str]]:
+    return [(markdown[0], markdown[1][i: i + max_size]) for i in range(0, len(markdown[1]), max_size)]
 
 
 async def save_jobs(list: JobList, supabase: AsyncClient) -> int:
@@ -175,7 +184,7 @@ async def save_jobs(list: JobList, supabase: AsyncClient) -> int:
     return len(result.data) or 0
 
 
-async def parse_and_save_jobs(markdown: str) -> int:
+async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
     count = 0
     async with parse_jobs_semaphore:
         supabase = await create_supabase()
@@ -191,7 +200,7 @@ async def parse_and_save_jobs(markdown: str) -> int:
                             "content": f"{base_prompt}"},
                         {
                             "role": "user",
-                            "content": markdown
+                            "content": chunk[1]
                         }
                     ],
                     response_format={"type": "json_object"},
@@ -204,6 +213,8 @@ async def parse_and_save_jobs(markdown: str) -> int:
                 raw_content = response.choices[0].message.content
 
                 jobs = JobList.model_validate_json(raw_content)
+                jobs.assign_website(chunk[0])
+
                 saved_count = await save_jobs(jobs, supabase)
 
                 print(f'Parsed and saved {saved_count} jobs')
