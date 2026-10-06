@@ -1,4 +1,4 @@
-# SmartScraper
+# SmartScraper | An AI Job Hunter on Ollama
 
 SmartScraper is an automated tool designed to crawl websites, extract job
 postings using AI, and store the structured data into Supabase. It leverages
