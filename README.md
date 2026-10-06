@@ -46,25 +46,48 @@ possible.
   - `websites`: To store the URLs and names of sites to scrape.
   - `jobs`: To store the extracted job postings.
 
-## ⚙️ Configuration
+## ⚙️ Environment Variables
+
+The following environment variables can be set in `.env` file (`backend/.env`):
+
+| Variable                                | Default       | Description                                      |
+| --------------------------------------- | ------------- | ------------------------------------------------ |
+| `SUPABASE_URL`                          | -             | Your Supabase project URL                        |
+| `SUPABASE_KEY`                          | -             | Your Supabase anon/service role key              |
+| `SUPABASE_WEBSITE_TABLE`                | `websites`    | Name of the websites table                       |
+| `SUPABASE_JOB_TABLE`                    | `jobs`        | Name of the jobs table                           |
+| `OLLAMA_MODEL`                          | `llama3.2:3b` | The Ollama model to use for parsing              |
+| `OPENAI_TIMEOUT`                        | `120`         | Timeout in seconds for OpenAI API calls          |
+| `CHUNK_SIZE`                            | `3000`        | Size of markdown chunks for AI parsing           |
+| `PARSE_JOBS_INITIAL_DELAY`              | `2`           | Initial delay (seconds) between parsing attempts |
+| `PARSE_JOBS_INTERVAL`                   | `1`           | Interval (seconds) between retry attempts        |
+| `PARSE_JOBS_EXPONENTIAL_BACKOFF_FACTOR` | `2`           | Factor for exponential backoff                   |
+| `PARSE_JOBS_MAX_RETRIES`                | `5`           | Maximum number of retry attempts                 |
+| `PARSE_JOBS_CONCURRENT_WORKERS`         | `1`           | Concurrent workers for job parsing               |
+
+### Create ENV File
 
 Create a `.env` file in the `backend/` directory with the following variables:
 
 ```env
 SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_anon_or_service_role_key
-SUPABASE_WEBSITE_TABLE=websites
-SUPABASE_JOB_TABLE=jobs
+SUPABASE_KEY=your_supabase_key
+SUPABASE_WEBSITE_TABLE=website
+SUPABASE_JOB_TABLE=job
 
-OLLAMA_MODEL=llama3 # or your preferred model
+OLLAMA_HOST=http://host.docker.internal:11434
+OLLAMA_MODEL=llama3.2:3b # or any model you want
 
-PARSE_JOBS_INITIAL_DELAY=2
-PARSE_JOBS_INTERVAL=1
-PARSE_JOBS_EXPONENTIAL_BACKOFF_FACTOR=2
-PARSE_JOBS_MAX_RETRIES=3
+PARSE_JOBS_INITIAL_DELAY=0
+PARSE_JOBS_INTERVAL=0
+PARSE_JOBS_EXPONENTIAL_BACKOFF_FACTOR=1
+PARSE_JOBS_MAX_RETRIES=10
 
-WEB_SCRAPE_CONCURRENT_WORKERS=5
-PARSE_JOBS_CONCURRENT_WORKERS=3
+OPENAI_TIMEOUT=120
+
+PARSE_JOBS_CONCURRENT_WORKERS=1
+
+CHUNK_SIZE=3000
 ```
 
 ## 🚀 Getting Started
@@ -87,12 +110,12 @@ PARSE_JOBS_CONCURRENT_WORKERS=3
 
 ## 📡 API Endpoints
 
-| Method | Endpoint    | Description                                  |
-| ------ | ----------- | -------------------------------------------- |
-| `GET`  | `/health`   | Check if the service is running.             |
-| `GET`  | `/websites` | Retrieve the list of websites to be scraped. |
-| `POST` | `/websites` | Add a new website to the database.           |
-| `POST` | `/scrape`   | Trigger the scraping and AI parsing process. |
+| Method | Endpoint       | Description                                                       |
+| ------ | -------------- | ----------------------------------------------------------------- |
+| `GET`  | `/health`      | Check if the service is running.                                  |
+| `GET`  | `/websites`    | Retrieve the list of websites to be scraped.                      |
+| `POST` | `/websites`    | Add a new website to the database.                                |
+| `POST` | `/scraper/run` | Trigger the scraping and AI parsing process (runs in background). |
 
 ## 🔄 How it Works
 
@@ -100,9 +123,17 @@ PARSE_JOBS_CONCURRENT_WORKERS=3
    your Supabase `websites` table.
 2. **Web Crawling**: `crawl4ai` visits each website, strips away unnecessary
    elements (nav, footer, etc.), and converts the content to clean Markdown.
-3. **Chunking**: The markdown content is split into smaller chunks to fit within
-   the LLM's context window.
+3. **Chunking**: The markdown content is split into smaller chunks (default size
+   configurable via `CHUNK_SIZE` env var, default 3000) to fit within the LLM's
+   context window.
 4. **AI Extraction**: Each chunk is sent to Ollama with a specialized prompt
-   (`prompt.txt`) to extract job-related data into a JSON format.
+   (`prompt.txt`) to extract job-related data into a JSON format. The system
+   supports retry logic with exponential backoff, prompt reinforcement based on
+   last attempt errors, and handles the following error types:
+   - **API Timeout**: Retries with increasing delays up to
+     `PARSE_JOBS_MAX_RETRIES`
+   - **Supabase API Errors**: Retries with exponential backoff
+   - **Pydantic Validation Errors**: Optimistic retries to fill missing fields
 5. **Data Persistence**: The structured job objects (title, company, location,
-   etc.) are validated and saved into the Supabase `jobs` table.
+   etc.) are validated and saved into the Supabase `jobs` table using upsert
+   operation (supports idempotent updates).
