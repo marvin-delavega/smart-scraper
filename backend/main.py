@@ -138,10 +138,11 @@ async def scrape_websites() -> dict[str, Any]:
     chunks = list(itertools.chain.from_iterable([await split_markdown(m, 3000) for m in scrape_results]))
     print(f'Scrape results chunked into {len(chunks)} chunks. Parsing...')
 
-    total_jobs = await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
-    print(f'Saved {sum(total_jobs)} jobs in total. See dashboard')
+    parse_results = await asyncio.gather(*(parse_and_save_jobs(c) for c in chunks))
+    total_jobs = sum(parse_results)
+    print(f'Saved {total_jobs} jobs in total. See dashboard')
 
-    return {"message": "Scraping completed", "data": 0}
+    return {"message": "Scraping completed", "data": total_jobs}
 
 
 async def scrape_website(website: Website) -> tuple[Website, str]:
@@ -208,7 +209,7 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
     async with parse_jobs_semaphore:
         supabase = await create_supabase()
         delay = parse_jobs_initial_delay
-        last_attempt_error = 'None'
+        next_attempt_reinforcement = 'None'
         timeout = openai_min_timeout
 
         for attempt in range(1, max_retries + 1):
@@ -223,7 +224,7 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
                         },
                         {
                             "role": "user",
-                            "content": f"website_address: {chunk[0]}  \nThis is attempt #{attempt}, last attempt error:  \n{last_attempt_error}  \nMARKDOWN:  \n{chunk[1]}"
+                            "content": f"website_address: {chunk[0]}  \nThis is attempt #{attempt}, last attempt error:  \n{next_attempt_reinforcement}  \nMARKDOWN:  \n{chunk[1]}"
                         }
                     ],
                     response_format={"type": "json_object"},
@@ -248,66 +249,56 @@ async def parse_and_save_jobs(chunk: tuple[Website, str]) -> int:
 
                 await asyncio.sleep(parse_jobs_interval)
                 break
-            except APITimeoutError as e:
-                error = str(e)
+            except APITimeoutError as e:  # openai timeout error
+                print_error(e, e.message)
 
-                if attempt >= max_retries:
-                    print(
-                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                if not has_retries(attempt):
                     break
 
-                print(f'{e.__class__}: {error}. Retrying...')
-
-                last_attempt_error = 'Timeout'
+                next_attempt_reinforcement = f'Timeout. Try to keep the session within {openai_min_timeout} to {openai_max_timeout} seconds.'
                 timeout = openai_max_timeout
-                await asyncio.sleep(delay)
-                delay *= parse_jobs_exponential_backoff_factor
-            except APIError as e:
-                error = str(e)
+                delay = await exponential_backoff(delay)
+            except APIError as e:  # supabase api error
+                print_error(e, e.message or '')
 
-                if attempt >= max_retries:
-                    print(
-                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                if not has_retries(attempt):
                     break
 
-                if e.code == '23505':  # Duplicate key
-                    print(f'{e.__class__}: {error}. Retrying...')
-                else:
-                    HTTPException(status_code=500,
-                                  detail=f'{e.__class__}: {error}')
-
-                last_attempt_error = 'Duplicate key: primary_link. Try to pick a different key.'
-                await asyncio.sleep(delay)
-                delay *= parse_jobs_exponential_backoff_factor
+                next_attempt_reinforcement = 'None'
+                delay = await exponential_backoff(delay)
             except ValidationError as e:
-                error = str(e)
+                print_error(e, e.json())
 
-                if attempt >= max_retries:
-                    print(
-                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                if not has_retries(attempt):
                     break
 
-                print(f'{e.__class__}: {error}. Retrying...')
-
-                last_attempt_error = 'Pydantic validation error. Optimistic Retry. Try to fill up all fields.'
-                await asyncio.sleep(delay)
-                delay *= parse_jobs_exponential_backoff_factor
+                next_attempt_reinforcement = 'Pydantic validation error. Optimistic Retry. Try to fill up all fields.'
+                delay = await exponential_backoff(delay)
             except Exception as e:
-                error = str(e)
+                print_error(e, str(e))
 
-                if attempt >= max_retries:
-                    print(
-                        f'{e.__class__}: {error}. Max retry attempt reached. Skipping...')
+                if not has_retries(attempt):
                     break
 
-                if '400' in error or '404' in error or '500' in error:
-                    print(f'{e.__class__}: {error}. Retrying...')
-                else:
-                    raise HTTPException(
-                        status_code=500, detail=f'{e.__class__}: {error}')
-
-                last_attempt_error = error
-                await asyncio.sleep(delay)
-                delay *= parse_jobs_exponential_backoff_factor
+                next_attempt_reinforcement = 'None'
+                delay = await exponential_backoff(delay)
 
     return count
+
+
+def has_retries(attempt: int) -> bool:
+    has_retries = attempt < max_retries
+
+    if not has_retries:
+        print(f'Max retries reached. Skipping...')
+
+    return has_retries
+
+
+def print_error(e: Exception, msg: str):
+    print(f'{e.__class__}: {msg}. Retrying...')
+
+
+async def exponential_backoff(current_delay: int) -> int:
+    await asyncio.sleep(current_delay)
+    return current_delay * parse_jobs_exponential_backoff_factor
