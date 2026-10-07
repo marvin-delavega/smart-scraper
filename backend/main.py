@@ -2,15 +2,18 @@ import asyncio
 import os
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from postgrest.exceptions import APIError
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import ValidationError
 from supabase import create_async_client, AsyncClient
 from dotenv import load_dotenv
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, DefaultMarkdownGenerator, PruningContentFilter
 from openai import APITimeoutError, AsyncOpenAI
+
+from models import Website, JobList
+
 
 app = FastAPI()
 
@@ -94,19 +97,6 @@ async def get_websites() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class Website(BaseModel):
-    address: str
-    name: str
-    created_at: datetime | None = None
-
-    def __init__(self, address: str, name: str, created_at: datetime | None = None):
-        super().__init__(address=address, name=name, created_at=created_at)
-
-        self.address = address
-        self.name = name
-        self.created_at = created_at
-
-
 @app.post('/websites')
 async def add_website(website: Website) -> dict[str, Any]:
     supabase = await create_supabase()
@@ -162,47 +152,6 @@ async def crawl(website: Website) -> str:
     async with AsyncWebCrawler() as crawler:
         result = await crawler.arun(url=website.address, config=crawler_config)
         return result.markdown.raw_markdown
-
-
-class JobPost(BaseModel):
-    title: str = Field(description='The exact job title')
-    desc: Optional[str] = Field(default=None,
-                                description='The summary of the job description')
-    company: Optional[str] = Field(default=None,
-                                   description='The name, website, or person of the job poster')
-    salary_range: Optional[str] = Field(default=None,
-                                        description='The salary range, this could be range or just a single value')
-    location: Optional[str] = Field(default=None,
-                                    description='The location of the work, could be a place or remote')
-    links: Optional[list[str]] = Field(default=[],
-                                       description='The links related to the job posting')
-    website_address: Optional[str] = Field(default=None,
-                                           description='The website address of the job posting.')
-    primary_link: str = Field(
-        description='The primary link of the job posting')
-
-    def set_website_address(self, website: Website):
-        self.website_address = website.address
-
-
-class JobList(BaseModel):
-    jobs: list[JobPost]
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_input(cls, data: Any) -> Any:
-        if isinstance(data, list):
-            return {"jobs": data}
-
-        if isinstance(data, dict):
-            for value in data.values():
-                if isinstance(value, list):
-                    return {"jobs": value}
-
-        return data
-
-    def assign_website(self, website: Website):
-        [job.set_website_address(website) for job in self.jobs]
 
 
 def get_chunks(markdown: str, max_size: int) -> list[str]:
