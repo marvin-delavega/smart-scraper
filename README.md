@@ -38,6 +38,15 @@ possible.
 - **Database**: [Supabase](https://supabase.com/)
 - **Containerization**: Docker & Docker Compose
 
+## 🌟 Highlights
+
+- **AI-Powered Web Scraping**: Uses `crawl4ai` with headless Chromium to fetch and clean website content, combined with Ollama LLMs for intelligent data extraction.
+- **Smart Chunking & Parsing**: Markdown content is automatically split into configurable chunks (`CHUNK_SIZE`) to fit within LLM context windows, with robust prompt-based extraction.
+- **Resilient Retry Logic**: Built-in exponential backoff, timeout handling, and retry strategies for API, Supabase, and validation errors, making scraping robust against transient failures.
+- **Structured Supabase Storage**: Extracted job data is validated via Pydantic models and upserted into Supabase, ensuring idempotent updates and reliable persistence.
+- **Fully Dockerized**: Easy deployment via Docker Compose; all dependencies (Playwright, Ollama, Supabase) are orchestrated for zero‑local‑setup development.
+- **Concurrent & Scalable**: Supports configurable concurrent workers for parallel scraping and parsing, suitable for large‑scale job hunting projects.
+
 ## 📋 Prerequisites
 
 - [Docker](https://www.docker.com/) and Docker Compose.
