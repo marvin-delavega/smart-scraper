@@ -23,6 +23,7 @@ url = os.getenv('SUPABASE_URL') or ''
 key = os.getenv('SUPABASE_KEY') or ''
 website_table = os.getenv('SUPABASE_WEBSITE_TABLE') or ''
 job_table = os.getenv('SUPABASE_JOB_TABLE') or ''
+scrape_run_table = os.getenv('SUPABASE_SCRAPE_RUN_TABLE') or ''
 
 ollama_model = os.getenv('OLLAMA_MODEL') or ''
 
@@ -44,6 +45,7 @@ print(f'Loaded Supabase URL: {url}')
 print(f'Loaded Supabase Key: {key}')
 print(f'Loaded Supabase Website Table: {website_table}')
 print(f'Loaded Supabase Job Table: {job_table}')
+print(f'Loaded Supabase Scrape Run Table: {scrape_run_table}')
 print(f'Loaded Ollama Model: {ollama_model}')
 print(f'Loaded Parse Jobs Initial Delay: {parse_jobs_initial_delay}')
 print(f'Loaded Parse Jobs Interval: {parse_jobs_interval}')
