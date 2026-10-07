@@ -56,3 +56,25 @@ class JobList(BaseModel):
 
     def assign_website(self, website: Website):
         [job.set_website_address(website) for job in self.jobs]
+
+
+class ScrapeRun(BaseModel):
+    website_address: str
+    start_at: datetime
+    end_at: datetime
+    crawled_chars: int
+    chunks: int
+    parse_result_chars: int
+    saved_jobs: int
+    max_retry: int
+    exceptions: list[str]
+    skipped_chunks: int
+    # Config used
+    model: str
+    parse_jobs_initial_delay: int
+    parse_jobs_interval: int
+    parse_jobs_exponential_backoff_factor: int
+    parse_jobs_max_retries: int
+    openai_timeout: int
+    parse_jobs_concurrent_workers: int
+    chunk_size: int
