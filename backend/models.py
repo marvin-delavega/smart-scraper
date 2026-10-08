@@ -1,5 +1,7 @@
 from datetime import datetime
+import json
 from typing import Any, Optional
+import uuid
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -26,6 +28,15 @@ class JobPost(BaseModel):
                                            description='The website address of the job posting.')
     primary_link: str = Field(
         description='The primary link of the job posting')
+    content_hash: Optional[uuid.UUID] = Field(default=None,
+                                              description='The generated hash of the content.')
+
+    def generate_content_hash(self) -> JobPost:
+        content_json = self.model_dump(exclude={'content-hash'})
+        unique_content = json.dumps(content_json, sort_keys=True)
+        self.content_hash = uuid.uuid5(uuid.NAMESPACE_DNS, unique_content)
+
+        return self
 
     def set_website_address(self, website: Website):
         self.website_address = website.address
@@ -108,7 +119,7 @@ class ScrapeRun(BaseModel):
         max_r = max((r.max_retry for r in results), default=0)
         skipped_chunks = len([r for r in results if r.saved_jobs == 0])
 
-        exceptions_set = set()
+        exceptions_set = set[str]()
         for r in results:
             exceptions_set.update(r.exceptions)
 

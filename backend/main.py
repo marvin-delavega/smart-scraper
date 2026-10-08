@@ -199,7 +199,8 @@ def get_chunks(markdown: str, max_size: int) -> list[str]:
 
 
 async def save_jobs(list: JobList, supabase: AsyncClient) -> int:
-    job_json_list = [job.model_dump() for job in list.jobs]
+    job_json_list = [job.generate_content_hash().model_dump(mode='json')
+                     for job in list.jobs]
     result = await supabase.table(job_table).upsert(job_json_list).execute()
 
     return len(result.data) or 0
@@ -215,7 +216,7 @@ async def parse_and_save_jobs(website: Website, chunk: str, supabase: AsyncClien
         result = ParseResult()
         delay = parse_jobs_initial_delay
         next_attempt_reinforcement = 'None'
-        exceptions = set()
+        exceptions = set[str]()
 
         for attempt in range(1, max_retries + 1):
             print(
