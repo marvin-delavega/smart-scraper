@@ -134,7 +134,7 @@ async def run_scraper(supabase: AsyncClient):
     if is_test_mode_single_run:
         websites = [await get_one_website(supabase)]
     else:
-        websites = [Website(**data) for data in (await get_websites())['data']]
+        websites = [Website(**data) for data in (await get_websites(supabase))['data']]
 
     print(f'Found {len(websites)} websites to scrape')
 
