@@ -9,13 +9,6 @@ class Website(BaseModel):
     name: str
     created_at: datetime | None = None
 
-    def __init__(self, address: str, name: str, created_at: datetime | None = None):
-        super().__init__(address=address, name=name, created_at=created_at)
-
-        self.address = address
-        self.name = name
-        self.created_at = created_at
-
 
 class JobPost(BaseModel):
     title: str = Field(description='The exact job title')
@@ -58,6 +51,19 @@ class JobList(BaseModel):
         [job.set_website_address(website) for job in self.jobs]
 
 
+class ParseResult:
+    parse_result_chars: int
+    saved_jobs: int
+    max_retry: int
+    exceptions: set[str]
+
+    def set_results(self, parse_result_chars: int, saved_jobs: int, max_retry: int, exceptions: set[str]):
+        self.parse_result_chars = parse_result_chars
+        self.saved_jobs = saved_jobs
+        self.max_retry = max_retry
+        self.exceptions = exceptions
+
+
 class ScrapeRun(BaseModel):
     website_address: str
     start_at: datetime
@@ -78,3 +84,51 @@ class ScrapeRun(BaseModel):
     openai_timeout: int
     parse_jobs_concurrent_workers: int
     chunk_size: int
+
+    @classmethod
+    def from_results(
+        cls,
+        results: list[ParseResult],
+        website_address: str,
+        start_at: datetime,
+        end_at: datetime,
+        crawled_chars: int,
+        chunks: int,
+        model: str,
+        parse_jobs_initial_delay: int,
+        parse_jobs_interval: int,
+        parse_jobs_exponential_backoff_factor: int,
+        parse_jobs_max_retries: int,
+        openai_timeout: int,
+        parse_jobs_concurrent_workers: int,
+        chunk_size: int,
+    ) -> ScrapeRun:
+        total_chars = sum(r.parse_result_chars for r in results)
+        total_jobs = sum(r.saved_jobs for r in results)
+        max_r = max((r.max_retry for r in results), default=0)
+        skipped_chunks = len([r for r in results if r.saved_jobs == 0])
+
+        exceptions_set = set()
+        for r in results:
+            exceptions_set.update(r.exceptions)
+
+        return cls(
+            parse_result_chars=total_chars,
+            saved_jobs=total_jobs,
+            max_retry=max_r,
+            exceptions=list(exceptions_set),
+            website_address=website_address,
+            start_at=start_at,
+            end_at=end_at,
+            crawled_chars=crawled_chars,
+            chunks=chunks,
+            skipped_chunks=skipped_chunks,
+            model=model,
+            parse_jobs_initial_delay=parse_jobs_initial_delay,
+            parse_jobs_interval=parse_jobs_interval,
+            parse_jobs_exponential_backoff_factor=parse_jobs_exponential_backoff_factor,
+            parse_jobs_max_retries=parse_jobs_max_retries,
+            openai_timeout=openai_timeout,
+            parse_jobs_concurrent_workers=parse_jobs_concurrent_workers,
+            chunk_size=chunk_size,
+        )
