@@ -36,32 +36,55 @@
         </v-row>
 
         <v-card>
-          <v-card-title class="text-title-small">Scraped Job Listing</v-card-title>
-          <v-list class="ml-4 mr-4">
+          <v-card-title class="flex-grow text-title-medium">Scraped Job Listing | {{ totalJobs }} jobs</v-card-title>
+          <v-divider></v-divider>
+          <v-pagination 
+            class="text-body-small" 
+            :show-first-last-page="true" 
+            size="small"
+            v-model="currentPage"
+            :length="totalPages"
+            :total-visible="5"
+            :disabled="isLoading"
+            @update:model-value="fetchJobs"></v-pagination>
+          <v-skeleton-loader type="list-item-three-line" v-show="isLoading"></v-skeleton-loader>
+          <v-list v-show="!isLoading" class="ml-4 mr-4">
             <v-list-item 
               v-for="(job, index) in jobs" 
+              :ref="(el) => checkOverflow(el, index)" 
               :key="index" 
-              :href="job.primary_link"
+              @click="openJobLink(job.primary_link)"
               class="mb-3 border elevation-1 rounded bg-surface">
               <div class="d-flex flex-col">
-                <v-img :src="getIconUrl(job)" max-width="24" max-height="24" class="my-auto mr-3"></v-img>
+                <v-img :src="getIconUrl(job.website_address)" max-width="24" max-height="24" class="my-auto mr-3"></v-img>
                 <div>
                   <v-list-item-title>{{ job.title }}</v-list-item-title>
-                  <v-list-item-subtitle>{{ getDomain(job) + ' | ' + job.company + ' | ' + job.location }}</v-list-item-subtitle>
+                  <v-list-item-subtitle>{{ getDomain(job.website_address) + ' | ' + job.company + ' | ' + job.location }}</v-list-item-subtitle>
                 </div>
               </div>
               <v-divider class="mt-2 mb-4"></v-divider>
-              <p class="text-body-medium">Salary Range: {{ job.salary_range || 'Not available'}}</p>
-              <p class="text-body-medium">{{ job.desc }}</p>
-              <p class="text-body-medium mt-6">Relevant links:</p>
+              <p class="text-body-medium">Salary: <span class="text-green">{{ job.salary_range || 'Not available'}}</span></p>
+              <v-sheet
+                :max-height="expandedItemId != index ? '200px' : ''" 
+                class="overflow-y-hidden job-body">
+                <p class="text-body-medium text-grey-lighten-1">{{ job.desc }}</p>
+                <p class="text-body-medium mt-6">Relevant links:</p>
+                <v-btn 
+                  v-for="(link, index) in job.links"
+                  :href="link"
+                  target="_blank"
+                  variant="text"
+                  class="text-body-small text-truncate justify-start text-decoration-underline text-grey-lighten-1"
+                  max-width="100%">
+                  {{ link }}
+                </v-btn>
+              </v-sheet>
               <v-btn 
-                v-for="(link, index) in job.links"
-                :href="link"
-                target="_blank"
+                v-if="overflowIndexList.includes(index) && expandedItemId !== index"
+                class="text-body-small text-grey my-2 see-more-button" 
                 variant="text"
-                class="px-0 ml-2 text-body-small text-truncate justify-start"
-                max-width="100%">
-                {{ link }}
+                @click.stop="expandedItemId=index">
+                See more
               </v-btn>
             </v-list-item>
           </v-list>
@@ -86,24 +109,83 @@ type Job = {
   primary_link: string
   content_hash: string
 }
-const jobs = ref<Job[]>();
-const totalJobsScraped = ref(100);
-const totalJobsScrapedComparison = ref('+8.5%');
 
-function getIconUrl(job: Job): string {
-  return 'https://' + getDomain(job) + '/favicon.ico'
+const jobs = ref<Job[]>()
+const totalJobsScraped = ref(100)
+const totalJobsScrapedComparison = ref('+8.5%')
+
+const currentPage = ref(1)
+const jobsPerPage = ref(10)
+const totalPages = ref(1)
+const totalJobs = ref(0)
+const expandedItemId = ref<number | null>(null)
+const overflowIndexList = ref<number[]>([])
+const isLoading = ref(true)
+
+const getIconUrl = (url: string): string => {
+  if (url === '')
+    return ''
+
+  return 'https://icons.duckduckgo.com/ip3/' + getDomain(url) + '.ico'
 }
 
-function getDomain(job: Job): string {
-  return new URL(job.website_address).hostname
+const getDomain = (url: string): string => {
+  return new URL(url).hostname
 }
 
-onMounted(async () => {
-  const {data, error: fetchError } = await supabase.from('job').select();
+const openJobLink = (url: string) => {
+  if (url === '')
+    return 
+
+  window.open(url, '_blank');
+}
+
+const checkOverflow = (el: any, index: number) => {
+  if (overflowIndexList.value.includes(index))
+    return
+
+  const listItem = el.$el as HTMLDivElement | null
+
+  if (listItem === null) {
+    return
+  }
+
+  const body = listItem.getElementsByClassName('job-body')[0]
+  if (body.clientHeight < body.scrollHeight)
+    overflowIndexList.value.push(index)
+
+  console.log(overflowIndexList.value)
+}
+
+const fetchJobs = async () => {
+  isLoading.value = true
+  const from = (currentPage.value - 1) * jobsPerPage.value
+  const to = from + jobsPerPage.value
+  const {data, error: fetchError } = await supabase.from('job').select().range(from, to);
   
-  if (fetchError)
+  if (fetchError){
     console.log(fetchError.message)
+    return
+  }
 
   jobs.value = data as Job[]
+  overflowIndexList.value = []
+  isLoading.value = false
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+onMounted(async () => {
+  const {count, error} = await supabase.from('job').select('*', {count: 'exact', head: true})
+
+  if (error) {
+    console.log(error)
+    return
+  }
+
+  totalJobs.value = count ?? 0
+  totalPages.value = Math.ceil((count ?? 0) / jobsPerPage.value)
+
+  await fetchJobs()
 })
 </script>
