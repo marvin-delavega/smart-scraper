@@ -37,15 +37,33 @@
 
         <v-card>
           <v-card-title class="text-title-small">Scraped Job Listing</v-card-title>
-          <v-list>
-            <v-list-item-group>
-              <v-list-item v-for="(item, index) in items" :key="index">
-                <v-list-item-content>
-                  <v-list-item-title>{{ item.title }}</v-list-item-title>
-                  <v-list-item-subtitle>{{ item.subtitle }}</v-list-item-subtitle>
-                </v-list-item-content>
-              </v-list-item>
-            </v-list-item-group>
+          <v-list class="ml-4 mr-4">
+            <v-list-item 
+              v-for="(job, index) in jobs" 
+              :key="index" 
+              :href="job.primary_link"
+              class="mb-3 border elevation-1 rounded bg-surface">
+              <div class="d-flex flex-col">
+                <v-img :src="getIconUrl(job)" max-width="24" max-height="24" class="my-auto mr-3"></v-img>
+                <div>
+                  <v-list-item-title>{{ job.title }}</v-list-item-title>
+                  <v-list-item-subtitle>{{ getDomain(job) + ' | ' + job.company + ' | ' + job.location }}</v-list-item-subtitle>
+                </div>
+              </div>
+              <v-divider class="mt-2 mb-4"></v-divider>
+              <p class="text-body-medium">Salary Range: {{ job.salary_range || 'Not available'}}</p>
+              <p class="text-body-medium">{{ job.desc }}</p>
+              <p class="text-body-medium mt-6">Relevant links:</p>
+              <v-btn 
+                v-for="(link, index) in job.links"
+                :href="link"
+                target="_blank"
+                variant="text"
+                class="px-0 ml-2 text-body-small text-truncate justify-start"
+                max-width="100%">
+                {{ link }}
+              </v-btn>
+            </v-list-item>
           </v-list>
         </v-card>
       </v-container>
@@ -54,9 +72,38 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
+import { supabase } from './lib/supabaseClient';
 
-const items = ref([{ title: 'Item 1', subtitle: 'test subtitle'}]);
+type Job = {
+  title: string
+  desc: string
+  company: string
+  salary_range: string
+  location: string
+  links: string[]
+  website_address: string
+  primary_link: string
+  content_hash: string
+}
+const jobs = ref<Job[]>();
 const totalJobsScraped = ref(100);
-const totalJobsScrapedComparison = ref('+8.5%')
+const totalJobsScrapedComparison = ref('+8.5%');
+
+function getIconUrl(job: Job): string {
+  return 'https://' + getDomain(job) + '/favicon.ico'
+}
+
+function getDomain(job: Job): string {
+  return new URL(job.website_address).hostname
+}
+
+onMounted(async () => {
+  const {data, error: fetchError } = await supabase.from('job').select();
+  
+  if (fetchError)
+    console.log(fetchError.message)
+
+  jobs.value = data as Job[]
+})
 </script>
