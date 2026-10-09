@@ -5,32 +5,29 @@
         <v-card class="mb-6">
           <v-card-item>
             <v-card-title class="text-headline-small">SmartScrape Dashboard</v-card-title>
-            <v-card-subtitle>Updated 20 minutes ago</v-card-subtitle>
+            <v-card-subtitle>Updated {{ lastUpdate }}</v-card-subtitle>
           </v-card-item>
         </v-card>
 
         <v-row class="mb-6">
           <v-col cols="12" md="4">
-            <v-card prepend-icon="mdi-briefcase-outline" append-icon="mdi-trending-up">
+            <v-card prepend-icon="mdi-briefcase-outline">
               <v-card-title class="text-title-small text-uppercase text-grey ">Jobs Scraped</v-card-title>
-              <v-card-text class="text-title-large font-weight-bold">{{ totalJobsScraped }}</v-card-text>
-              <v-card-text class="text-green font-weight-medium pt-0">{{ totalJobsScrapedComparison }} since last run</v-card-text>
+              <v-card-text class="text-title-large font-weight-bold">{{ analytics?.total_saved_jobs ?? 0 }}</v-card-text>
             </v-card>
           </v-col>
 
           <v-col cols="12" md="4">
-            <v-card prepend-icon="mdi-text-box-search-outline" append-icon="mdi-trending-up">
+            <v-card prepend-icon="mdi-text-box-search-outline">
               <v-card-title class="text-title-small text-uppercase text-grey ">Characters Parsed</v-card-title>
-              <v-card-text class="text-title-large font-weight-bold">{{ totalJobsScraped }}</v-card-text>
-              <v-card-text class="text-green font-weight-medium pt-0">{{ totalJobsScrapedComparison }} since last run</v-card-text>
+              <v-card-text class="text-title-large font-weight-bold">{{ analytics?.total_parsed_chars ?? 0 }}</v-card-text>
             </v-card>
           </v-col>
 
           <v-col cols="12" md="4">
-            <v-card prepend-icon="mdi-clock-outline" append-icon="mdi-trending-up">
+            <v-card prepend-icon="mdi-clock-outline">
               <v-card-title class="text-title-small text-uppercase text-grey ">Total Runtime</v-card-title>
-              <v-card-text class="text-title-large font-weight-bold">{{ totalJobsScraped }}</v-card-text>
-              <v-card-text class="text-green font-weight-medium pt-0">{{ totalJobsScrapedComparison }} since last run</v-card-text>
+              <v-card-text class="text-title-large font-weight-bold">{{ getFormattedTime(analytics?.total_runtime?.toString() ?? '0') }}</v-card-text>
             </v-card>
           </v-col>
         </v-row>
@@ -98,6 +95,17 @@
 import { onMounted, ref } from 'vue';
 import { supabase } from './lib/supabaseClient';
 
+type Analytics = {
+  total_crawled_chars: number
+  total_runtime:number
+  total_retries: number
+  total_parsed_chars: number
+  total_saved_jobs: number
+  total_skipped_chunks: number
+}
+
+const analytics = ref<Analytics>()
+
 type Job = {
   title: string
   desc: string
@@ -111,8 +119,6 @@ type Job = {
 }
 
 const jobs = ref<Job[]>()
-const totalJobsScraped = ref(100)
-const totalJobsScrapedComparison = ref('+8.5%')
 
 const currentPage = ref(1)
 const jobsPerPage = ref(10)
@@ -121,6 +127,7 @@ const totalJobs = ref(0)
 const expandedItemId = ref<number | null>(null)
 const overflowIndexList = ref<number[]>([])
 const isLoading = ref(true)
+const lastUpdate = ref('')
 
 const getIconUrl = (url: string): string => {
   if (url === '')
@@ -140,6 +147,22 @@ const openJobLink = (url: string) => {
   window.open(url, '_blank');
 }
 
+const timeRegex = /^\d{1,2}:\d{2}:\d{2}\.\d+$/;
+
+const getFormattedTime = (time: string): string => {
+  if (!timeRegex.test(time)) {
+    console.log('Invalid time ' + time)
+    return time
+  }
+
+  const segments = time.split(':')
+  const hr = Number(segments[0]) > 0 ? segments[0] + ' hr' : ''
+  const min = Number(segments[1]) > 0 ? segments[1] + ' min' : ''
+  const sec = Number(segments[2]) > 0 ? Math.ceil(Number(segments[2])) + ' sec' : ''
+
+  return `${hr} ${min} ${sec}`
+}
+
 const checkOverflow = (el: any, index: number) => {
   if (overflowIndexList.value.includes(index))
     return
@@ -155,6 +178,17 @@ const checkOverflow = (el: any, index: number) => {
     overflowIndexList.value.push(index)
 
   console.log(overflowIndexList.value)
+}
+
+const fetchAnalytics = async () => {
+  const {data, error} = await supabase.from('run_analytics').select()
+
+  if (error) {
+    console.log(error)
+    return
+  }
+
+  analytics.value = data[0] as Analytics
 }
 
 const fetchJobs = async () => {
@@ -173,7 +207,36 @@ const fetchJobs = async () => {
   isLoading.value = false
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const fetchLastUpdate = async () => {
+  const {data, error} = await supabase.from('scrape_run').select('end_at').order('end_at', {ascending: false}).limit(1)
+  
+  if (error) {
+    console.log(error)
+    return
+  }
+
+  const dateUpdated = new Date(data[0].end_at)
+  const timeSinceUpdate = Date.now() - dateUpdated.getTime()
+
+  console.log(dateUpdated)
+  console.log(timeSinceUpdate)
+
+  let hours = timeSinceUpdate / 1000 / 60 / 60
+  let minutes = (hours % 1) * 60
+  let seconds = (minutes % 1) * 60
+
+  hours = Math.floor(hours)
+  minutes = Math.floor(minutes)
+  seconds = Math.floor(seconds)
+
+  if (hours >= 48) {
+    lastUpdate.value = (hours / 24) + ' days ago'
+  } else if (hours >= 24 && hours < 48) {
+    lastUpdate.value = '1 day ago'
+  } else {
+    lastUpdate.value = `${hours > 0 ? hours + ' hr ' : ''}${minutes > 0 ? minutes + ' min ' : ''}${seconds > 0 ? seconds + ' sec' : ''} ago`
+  }
+}
 
 onMounted(async () => {
   const {count, error} = await supabase.from('job').select('*', {count: 'exact', head: true})
@@ -186,6 +249,8 @@ onMounted(async () => {
   totalJobs.value = count ?? 0
   totalPages.value = Math.ceil((count ?? 0) / jobsPerPage.value)
 
+  await fetchLastUpdate()
+  await fetchAnalytics()
   await fetchJobs()
 })
 </script>
