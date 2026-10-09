@@ -40,12 +40,23 @@ possible.
 
 ## 🌟 Highlights
 
-- **AI-Powered Web Scraping**: Uses `crawl4ai` with headless Chromium to fetch and clean website content, combined with Ollama LLMs for intelligent data extraction.
-- **Smart Chunking & Parsing**: Markdown content is automatically split into configurable chunks (`CHUNK_SIZE`) to fit within LLM context windows, with robust prompt-based extraction.
-- **Resilient Retry Logic**: Built-in exponential backoff, timeout handling, and retry strategies for API, Supabase, and validation errors, making scraping robust against transient failures.
-- **Structured Supabase Storage**: Extracted job data is validated via Pydantic models and upserted into Supabase, ensuring idempotent updates and reliable persistence.
-- **Fully Dockerized**: Easy deployment via Docker Compose; all dependencies (Playwright, Ollama, Supabase) are orchestrated for zero‑local‑setup development.
-- **Concurrent & Scalable**: Supports configurable concurrent workers for parallel scraping and parsing, suitable for large‑scale job hunting projects.
+- **AI-Powered Web Scraping**: Uses `crawl4ai` with headless Chromium to fetch
+  and clean website content, combined with Ollama LLMs for intelligent data
+  extraction.
+- **Smart Chunking & Parsing**: Markdown content is automatically split into
+  configurable chunks (`CHUNK_SIZE`) to fit within LLM context windows, with
+  robust prompt-based extraction.
+- **Resilient Retry Logic**: Built-in exponential backoff, timeout handling, and
+  retry strategies for API, Supabase, and validation errors, making scraping
+  robust against transient failures.
+- **Structured Supabase Storage**: Extracted job data is validated via Pydantic
+  models and upserted into Supabase, ensuring idempotent updates and reliable
+  persistence.
+- **Fully Dockerized**: Easy deployment via Docker Compose; all dependencies
+  (Playwright, Ollama, Supabase) are orchestrated for zero‑local‑setup
+  development.
+- **Concurrent & Scalable**: Supports configurable concurrent workers for
+  parallel scraping and parsing, suitable for large‑scale job hunting projects.
 
 ## 📋 Prerequisites
 
@@ -146,3 +157,10 @@ CHUNK_SIZE=3000
 5. **Data Persistence**: The structured job objects (title, company, location,
    etc.) are validated and saved into the Supabase `jobs` table using upsert
    operation (supports idempotent updates).
+
+## Dashboard
+
+Run logs and analytics are also saved in supabase. You can view the dashboard
+hosted live on vercel: [SmartScraper](https://smart-scraper-ashy.vercel.app/)
+
+![alt text](image-1.png)
